@@ -1,0 +1,96 @@
+/* ThanksPage.css */
+
+.page-wrapper {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: white;
+  padding: 1rem;
+  color: #1C39BB;
+}
+
+.feedback-card {
+  width: 100%;
+  max-width: 768px;
+  background-color: #F0F4FF;
+  border: 2px solid #1C39BB;
+  border-radius: 1rem;
+  padding: 2rem;
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.1);
+}
+
+.feedback-card h1 {
+  font-size: 1.75rem;
+  font-weight: bold;
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.question-block {
+  margin-bottom: 2rem;
+}
+
+.star-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.star-rating {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.star {
+  font-size: 2rem;
+  cursor: pointer;
+  transition: color 0.2s ease-in-out;
+  user-select: none;
+  color: gray;
+}
+
+.star.filled {
+  color: #1C39BB;
+}
+
+.star:hover {
+  color: #1C39BB;
+}
+
+textarea {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid #1C39BB;
+  border-radius: 0.5rem;
+  background-color: white;
+  resize: vertical;
+}
+
+textarea:focus {
+  outline: none;
+  border-color: #1C39BB;
+  box-shadow: 0 0 0 2px rgba(28, 57, 187, 0.2);
+}
+
+.submit-button {
+  background-color: #1C39BB;
+  color: white;
+  padding: 0.5rem 1.5rem;
+  border-radius: 0.5rem;
+  font-weight: bold;
+  transition: background-color 0.2s ease;
+  float: right;
+  border: none;
+  cursor: pointer;
+}
+
+.submit-button:hover {
+  background-color: #CC3333;
+}
+
+.submit-button:disabled {
+  background-color: #ccc;
+  color: #666;
+  cursor: not-allowed;
+}
