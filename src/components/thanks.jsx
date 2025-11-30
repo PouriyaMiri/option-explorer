@@ -1,424 +1,516 @@
-// src/components/Page2Thanks.jsx
-import React, { useEffect, useMemo, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import Papa from 'papaparse';
+import React, { useEffect, useMemo, useState } from "react";
+import { LOG_FEEDBACK, } from "../config/endpoints";
+import { getSessionId } from '../session';
+const sessionId = getSessionId();
+const LOG_FEEDBACK_ENDPOINT = LOG_FEEDBACK;
 
-const STATIC_ARTIFACT_BASE = 'http://194.249.2.210:3001/logs/page2/';
-
-const Star = ({ filled }) => (
-  <span
-    style={{
-      fontSize: '1.25rem',
-      marginRight: '4px',
-      color: filled ? '#CC3333' : '#D1D5DB',
-      userSelect: 'none',
-    }}
-  >
-    {filled ? '★' : '☆'}
-  </span>
-);
-
-const StarRating = ({ value, onChange, label, disabled = false }) => (
-  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-    {label ? <span style={{ minWidth: 220 }}>{label}</span> : null}
-    <div>
-      {[1, 2, 3, 4, 5].map((star) => (
-        <span
-          key={star}
-          onClick={() => !disabled && onChange(star)}
-          style={{ cursor: disabled ? 'default' : 'pointer' }}
-          aria-label={`${star} star${star > 1 ? 's' : ''}`}
-        >
-          <Star filled={star <= value} />
-        </span>
-      ))}
-    </div>
+/** Small star rating control 1–5 */
+const StarRating = ({ value, onChange }) => (
+  <div style={{ display: "inline-flex", gap: 6 }}>
+    {[1, 2, 3, 4, 5].map((n) => (
+      <span
+        key={n}
+        onClick={() => onChange(n)}
+        style={{
+          cursor: "pointer",
+          fontSize: "1.2rem",
+          lineHeight: 1,
+          color: n <= value ? "#CC3333" : "#CBD5E1",
+          userSelect: "none",
+        }}
+      >
+        {n <= value ? "★" : "☆"}
+      </span>
+    ))}
   </div>
 );
 
-const box = {
-  maxWidth: '980px',
-  margin: '2rem auto',
-  backgroundColor: '#F0F4FF',
-  border: '2px solid #1C39BB',
-  borderRadius: '12px',
-  boxShadow: '0 6px 12px rgba(0,0,0,0.15)',
-  padding: '1.5rem',
-  color: '#1C39BB',
+const cardStyle = {
+  maxWidth: "1060px",
+  margin: "24px auto",
+  backgroundColor: "#F7FAFF",
+  borderRadius: "14px",
+  border: "1px solid #CBD5E1",
+  boxShadow: "0 8px 20px rgba(15,23,42,0.08)",
+  padding: "20px 22px",
+  color: "#1C39BB",
 };
 
-const labelStyle = { fontWeight: 700, marginBottom: '0.25rem' };
-const textareaStyle = {
-  width: '100%',
-  border: '1px solid #1C39BB',
-  borderRadius: '8px',
-  padding: '10px',
-  resize: 'vertical',
-  color: '#1C39BB',
-  backgroundColor: 'white',
-};
-const buttonStyle = (enabled) => ({
-  padding: '10px 20px',
-  borderRadius: '8px',
-  fontSize: '16px',
-  cursor: enabled ? 'pointer' : 'not-allowed',
-  color: 'white',
-  backgroundColor: enabled ? '#1C39BB' : '#94A3B8',
-  border: 'none',
-});
-const br = (s) => (s == null ? '' : String(s));
-const formatKV = (obj) => Object.entries(obj || {}).map(([k, v]) => `${k}: ${v}`).join('  |  ');
+/**
+ * Final comparison page ("Thank2"):
+ * - Shows 3 models side by side:
+ *   1) Manual choice (Page 1)
+ *   2) Choice from Results page
+ *   3) Top-ranked option from Results
+ * - Records final judgements + comments
+ * - Sends everything to /log-feedback, then shows a thank-you state.
+ */
+const Thank2Page = () => {
+  const [manualModel, setManualModel] = useState(null);
+  const [resultsSelectedModel, setResultsSelectedModel] = useState(null);
+  const [resultsTopModel, setResultsTopModel] = useState(null);
 
-// Compare helper (soft match)
-const sameRow = (a, b) => {
-  if (!a || !b) return false;
-  const keys = ['model', 'algorithm', 'accuracy', 'utility_value', 'domain'];
-  let matches = 0, checked = 0;
-  keys.forEach((k) => {
-    if (k in a && k in b) {
-      checked += 1;
-      if (String(a[k]) === String(b[k])) matches += 1;
-    }
-  });
-  if (checked >= 2) return matches >= 2;
-  return JSON.stringify(a) === JSON.stringify(b);
-};
+  // questions
+	//
+	//
+	//
+  const [configSatisfaction, setConfigSatisfaction] = useState(0);
+  const [configDifficulty, setConfigDifficulty] = useState(0);
+  const [consistency, setConsistency] = useState(0); // 1–5
+  const [preference, setPreference] = useState(""); // "manual" | "results" | "top"
+  const [confidence, setConfidence] = useState(0); // 1–5
+  const [comments, setComments] = useState("");
 
-// Column order used for comparison table (like Final.jsx)
-const ORDER = [
-  'field', 'domain', 'intent', 'sub-model',
-  'algorithm', 'model', 'processing_unit', 'RAM',
-  'layers', 'nodes', 'activation_function',
-  'kernel_size', 'pool_size', 'batch_size', 'epochs',
-  'accuracy', 'precision', 'recall', 'f1_score', 'loss', 'training_time',
-];
-const labelize = (k) => k.replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
-const cell = (v) => (v === undefined || v === null ? '' : String(v));
+  const [submitting, setSubmitting] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState("");
 
-export default function Page2Thanks() {
-  const navigate = useNavigate();
-  const { state } = useLocation();
-  const selectedRow = state?.selectedRow || null;
-  const artifactCsv = state?.artifactCsv || '';
-
-  // Existing questions
-  const [difficulty, setDifficulty] = useState(0);
-  const [satisfaction, setSatisfaction] = useState(0);
-
-  // Semantic questions:
-  const [semUnderstand, setSemUnderstand] = useState(0); // 1..5
-  const [semTrust, setSemTrust] = useState('');          // 'Yes' | 'No'
-  const [semControl, setSemControl] = useState(0);       // 1..5
-
-  const [firstRow, setFirstRow] = useState(null);
-  const [firstLoadErr, setFirstLoadErr] = useState('');
-  const [whyBetter, setWhyBetter] = useState('');
-  const [firstRowRating, setFirstRowRating] = useState(0);
-
-  const [feedback, setFeedback] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  // Load first-row from the artifact CSV
+  // pull models from localStorage on mount
   useEffect(() => {
-    const run = async () => {
-      if (!artifactCsv) return;
+    const safeParse = (key) => {
       try {
-        setFirstLoadErr('');
-        const url = `${STATIC_ARTIFACT_BASE}${encodeURIComponent(artifactCsv)}`;
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`CSV HTTP ${res.status}`);
-        const text = await res.text();
-        const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
-        const rows = Array.isArray(parsed?.data) ? parsed.data : [];
-        setFirstRow(rows[0] || null);
-      } catch (e) {
-        setFirstLoadErr(e.message || 'Failed to load first row.');
-        setFirstRow(null);
+        const raw = localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === "object" ? parsed : null;
+      } catch {
+        return null;
       }
     };
-    run();
-  }, [artifactCsv]);
 
-  const selectedIsFirst = useMemo(() => {
-    if (!selectedRow || !firstRow) return false;
-    return sameRow(selectedRow, firstRow);
-  }, [selectedRow, firstRow]);
+    setManualModel(safeParse("manual_selected_model"));
+    setResultsSelectedModel(safeParse("results_selected_model"));
+    setResultsTopModel(safeParse("results_top_model"));
+  }, []);
 
-  // Keys for comparison table (ORDER first, then any extras)
-  const allKeys = useMemo(() => {
-    const s = new Set(ORDER);
-    if (selectedRow) Object.keys(selectedRow).forEach((k) => s.add(k));
-    if (firstRow) Object.keys(firstRow).forEach((k) => s.add(k));
-    const extras = Array.from(s).filter((k) => !ORDER.includes(k)).sort();
-    return [...ORDER, ...extras];
-  }, [selectedRow, firstRow]);
+  // Build union of all keys to show in table
+  const tableKeys = useMemo(() => {
+    const keys = new Set();
+    const addKeys = (obj) => {
+      if (!obj || typeof obj !== "object") return;
+      Object.keys(obj).forEach((k) => keys.add(k));
+    };
+    addKeys(manualModel);
+    addKeys(resultsSelectedModel);
+    addKeys(resultsTopModel);
 
-  const summary = useMemo(() => {
-    if (!selectedRow) return 'No selection payload found.';
-    const show = { ...selectedRow };
-    Object.keys(show).forEach((k) => {
-      const s = br(show[k]);
-      if (s.length > 120) show[k] = `${s.slice(0, 117)}…`;
+    // put some likely interesting fields first
+    const important = [
+      "model",
+      "algorithm",
+      "dataset",
+      "domain",
+      "field",
+      "intent",
+      "processing_unit",
+      "RAM",
+      "accuracy",
+      "precision",
+      "recall",
+      "f1_score",
+      "loss",
+      "training_time",
+    ];
+
+    const ordered = [];
+    important.forEach((k) => {
+      if (keys.has(k)) {
+        ordered.push(k);
+        keys.delete(k);
+      }
     });
-    return formatKV(show);
-  }, [selectedRow]);
 
-  // Validation (adjusted for Yes/No semTrust)
-  const canSubmit = useMemo(() => {
-    if (difficulty < 1 || satisfaction < 1) return false;
-    if (semUnderstand < 1 || !['Yes', 'No'].includes(semTrust) || semControl < 1) return false;
+    // remaining keys in alphabetical order
+    return [...ordered, ...Array.from(keys).sort()];
+  }, [manualModel, resultsSelectedModel, resultsTopModel]);
 
-    if (!selectedIsFirst) {
-      if (!whyBetter.trim()) return false;
-      if (firstRowRating < 1) return false;
-    }
-    return true;
-  }, [difficulty, satisfaction, semUnderstand, semTrust, semControl, selectedIsFirst, whyBetter, firstRowRating]);
+  const getCell = (obj, key) => {
+    if (!obj) return "";
+    const v = obj[key];
+    if (v == null) return "";
+    if (typeof v === "number") return v;
+    if (typeof v === "string") return v;
+    return String(v);
+  };
+
+  const isReadyToSubmit = () =>
+    !!manualModel &&
+    !!resultsSelectedModel &&
+    !!resultsTopModel &&
+    consistency > 0 &&
+    configSatisfaction > 0 &&
+    configDifficulty > 0 &&
+    confidence > 0 &&
+    preference !== "" &&
+    !submitting;
 
   const handleSubmit = async () => {
+    if (!isReadyToSubmit()) return;
+    setSubmitting(true);
+    setError("");
+
     const payload = {
-      type: 'page2_thanks',
-      page: 'page2',
-      artifact: artifactCsv || null,
-
-      selected_row_signature: selectedRow ? {
-        model: selectedRow.model ?? null,
-        algorithm: selectedRow.algorithm ?? null,
-        accuracy: selectedRow.accuracy ?? null,
-        utility_value: selectedRow.utility_value ?? null,
-      } : null,
-      first_row_signature: firstRow ? {
-        model: firstRow.model ?? null,
-        algorithm: firstRow.algorithm ?? null,
-        accuracy: firstRow.accuracy ?? null,
-        utility_value: firstRow.utility_value ?? null,
-      } : null,
-
-      // core
-      difficulty,
-      satisfaction,
-
-      // semantic evals
-      sem_understandability: semUnderstand,     // 1..5
-      sem_trust_discovery: semTrust,            // 'Yes' | 'No'
-      sem_control_fit: semControl,              // 1..5
-
-      // conditional comparison
-      selected_is_first: selectedIsFirst,
-      compare_why_selected_better: selectedIsFirst ? '' : whyBetter.trim(),
-      compare_first_row_rating: selectedIsFirst ? null : firstRowRating,
-
-      // optional free text
-      open_feedback: feedback.trim(),
+      page: "thank2_final_comparison",
+      configSatisfaction, // satisfaction with configuration selection
+      configDifficulty, // difficulty of configuration selection
+      consistency, // perceived consistency between three choices
+      confidence, // confidence in final preference
+      preference, // which model they ultimately prefer
+      comments,
+      manualModel,
+      resultsSelectedModel,
+      resultsTopModel,
     };
 
     try {
-      setSaving(true);
-      const res = await fetch('http://194.249.2.210:3001/log', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+      await fetch(LOG_FEEDBACK_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" , 'x-session-id': sessionId },
+        body: JSON.stringify({ sessionId, ...payload }),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data?.error || 'Failed to write user log');
-      }
 
-      alert('Thanks for your contribution to this research.');
-      navigate('/final');
-    } catch (e) {
-      alert(e.message || 'Failed to save feedback.');
+      // optional: clean up client-side state
+      // (keep it if you want to inspect localStorage later)
+      // localStorage.removeItem("manual_selected_model");
+      // localStorage.removeItem("results_selected_model");
+      // localStorage.removeItem("results_top_model");
+
+      setDone(true);
+    } catch (err) {
+      setError("Failed to submit final feedback. Please inform the experimenter.");
     } finally {
-      setSaving(false);
+      setSubmitting(false);
     }
   };
 
-  return (
-    <div style={{ minHeight: '100vh', background: 'white', color: '#1C39BB' }}>
-      <header style={{ padding: '32px 20px 0' }}>
-        <h1 style={{ margin: 0, fontSize: '1.4rem', fontWeight: 900 }}>Thanks for your selection</h1>
-      </header>
+  const missingAnyModel = !manualModel || !resultsSelectedModel || !resultsTopModel;
 
-      <main style={{ padding: 24 }}>
-        <div style={box}>
-          {/* Selected row summary */}
-          <div style={{ marginBottom: '1rem' }}>
-            <div style={{ ...labelStyle, marginBottom: 6 }}>Your selected row (summary)</div>
-            <div
+  if (done) {
+    return (
+      <div style={{ padding: "24px" }}>
+        <div style={cardStyle}>
+          <h1 style={{ fontSize: "1.5rem", fontWeight: 800, marginBottom: "0.75rem" }}>
+            Thank you!
+          </h1>
+          <p style={{ fontSize: "0.95rem", lineHeight: 1.6 }}>
+            Your responses and model comparisons have been recorded. This concludes the study.
+            You may now close this window.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: "24px", color: "#1C39BB" }}>
+      <div style={cardStyle}>
+        <h1 style={{ fontSize: "1.4rem", fontWeight: 800, marginBottom: "0.75rem" }}>
+          Final Comparison
+        </h1>
+        <p style={{ fontSize: "0.95rem", lineHeight: 1.6, marginBottom: "1rem" }}>
+          Below you see the model you selected manually, the model you selected from
+          the system&apos;s ranked list, and the top-ranked option from that list. Please review
+          them side by side and answer the questions at the bottom.
+        </p>
+
+        {missingAnyModel && (
+          <div
+            style={{
+              marginBottom: "1rem",
+              padding: "0.65rem 0.85rem",
+              borderRadius: "8px",
+              backgroundColor: "#FEF2F2",
+              color: "#B91C1C",
+              fontSize: "0.9rem",
+            }}
+          >
+            Some comparison data is missing. Please inform the experimenter. You can still provide
+            comments below.
+          </div>
+        )}
+
+        {/* Comparison table */}
+        {!missingAnyModel && (
+          <div
+            style={{
+              marginTop: "0.5rem",
+              borderRadius: "10px",
+              border: "1px solid #CBD5E1",
+              overflow: "hidden",
+            }}
+          >
+            <table
               style={{
-                background: 'white',
-                border: '1px solid #BFD0FF',
-                borderRadius: 8,
-                padding: 12,
-                color: '#1C39BB',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
+                width: "100%",
+                borderCollapse: "collapse",
+                backgroundColor: "white",
               }}
             >
-              {summary}
+              <thead>
+                <tr
+                  style={{
+                    backgroundColor: "#E5EDFF",
+                    textAlign: "left",
+                    fontSize: "0.9rem",
+                  }}
+                >
+                  <th
+                    style={{
+                      padding: "8px 10px",
+                      borderBottom: "1px solid #CBD5E1",
+                      width: "18%",
+                    }}
+                  >
+                    Attribute
+                  </th>
+                  <th
+                    style={{
+                      padding: "8px 10px",
+                      borderBottom: "1px solid #CBD5E1",
+                    }}
+                  >
+                    Manually selection
+                  </th>
+                  <th
+                    style={{
+                      padding: "8px 10px",
+                      borderBottom: "1px solid #CBD5E1",
+                    }}
+                  >
+                    Results selection
+                  </th>
+                  <th
+                    style={{
+                      padding: "8px 10px",
+                      borderBottom: "1px solid #CBD5E1",
+                    }}
+                  >
+                    Top-ranked option
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {tableKeys.map((key) => (
+                  <tr key={key} style={{ borderBottom: "1px solid #E5E7EB" }}>
+                    <td
+                      style={{
+                        padding: "6px 10px",
+                        fontSize: "0.9rem",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {key}
+                    </td>
+                    <td style={{ padding: "6px 10px", fontSize: "0.9rem" }}>
+                      {getCell(manualModel, key)}
+                    </td>
+                    <td style={{ padding: "6px 10px", fontSize: "0.9rem" }}>
+                      {getCell(resultsSelectedModel, key)}
+                    </td>
+                    <td style={{ padding: "6px 10px", fontSize: "0.9rem" }}>
+                      {getCell(resultsTopModel, key)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Questions */}
+        <div style={{ marginTop: "1.5rem", display: "grid", gap: "0.9rem" }}>
+        
+
+          {/* Q1: satisfaction with configuration selection */}
+          <div>
+            <div style={{ fontWeight: 700, marginBottom: "0.25rem" }}>
+              1. How satisfied are you with the configuration selection you made in this stage by defining the constraint(s)?
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <StarRating value={configSatisfaction} onChange={setConfigSatisfaction} />
+              <span style={{ fontSize: "0.85rem" }}>
+                (1 = Very dissatisfied, 5 = Very satisfied)
+              </span>
             </div>
           </div>
 
-          {/* If selected row is NOT first → show a comparison table like Final.jsx */}
-          {!selectedIsFirst && firstRow && (
-            <div style={{ marginBottom: '1rem' }}>
-              <div style={{ ...labelStyle, marginBottom: 6 }}>
-                Comparison with the top-ranked row
-              </div>
-              <div style={{ overflowX: 'auto', border: '1px solid #BFD0FF', borderRadius: 10, background: 'white' }}>
-                <table style={{ borderCollapse: 'collapse', width: '100%', color: '#1C39BB', minWidth: 800 }}>
-                  <thead style={{ background: '#E7EEFF' }}>
-                    <tr>
-                      <th style={{ textAlign: 'left', padding: '10px 12px', borderBottom: '1px solid #BFD0FF', width: 240 }}>Field</th>
-                      <th style={{ textAlign: 'left', padding: '10px 12px', borderBottom: '1px solid #BFD0FF' }}>Your Selected Row</th>
-                      <th style={{ textAlign: 'left', padding: '10px 12px', borderBottom: '1px solid #BFD0FF' }}>First Row (Top Result)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {allKeys.map((k, idx) => (
-                      <tr key={k} style={{ background: idx % 2 ? '#FFFFFF' : '#F8FAFF' }}>
-                        <td style={{ padding: '10px 12px', borderBottom: '1px solid #EEF2FF', fontWeight: 700 }}>
-                          {labelize(k)}
-                        </td>
-                        <td style={{ padding: '10px 12px', borderBottom: '1px solid #EEF2FF', whiteSpace: 'nowrap' }}>
-                          {cell(selectedRow?.[k])}
-                        </td>
-                        <td style={{ padding: '10px 12px', borderBottom: '1px solid #EEF2FF', whiteSpace: 'nowrap' }}>
-                          {cell(firstRow?.[k])}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+          {/* Q2: difficulty of configuration selection */}
+          <div>
+            <div style={{ fontWeight: 700, marginBottom: "0.25rem" }}>
+              2. How difficult was the configuration selection task with the framework by defining constraints?
             </div>
-          )}
-
-          {/* Q1: Difficulty */}
-          <div style={{ marginBottom: '1rem' }}>
-            <div style={labelStyle}>1) Please rate the difficulty of finding the optimal model:</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <StarRating value={difficulty} onChange={setDifficulty} />
-              <span style={{ fontSize: '0.85rem' }}>(1 = Very Easy, 5 = Very Difficult)</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <StarRating value={configDifficulty} onChange={setConfigDifficulty} />
+              <span style={{ fontSize: "0.85rem" }}>
+                (1 = Very easy, 5 = Very difficult)
+              </span>
             </div>
           </div>
 
-          {/* Q2: System satisfaction */}
-          <div style={{ marginBottom: '1rem' }}>
-            <div style={labelStyle}>2) How satisfied are you with the system?</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <StarRating value={satisfaction} onChange={setSatisfaction} />
-              <span style={{ fontSize: '0.85rem' }}>(1 = Very Dissatisfied, 5 = Very Satisfied)</span>
+{/* Divider text before comparison questions */}
+<div
+  style={{
+    margin: "1rem 0 0.5rem",
+    padding: "0.6rem 0.8rem",
+    backgroundColor: "#F1F5F9",
+    borderRadius: "6px",
+    fontSize: "0.9rem",
+    color: "#334155",
+    border: "1px solid #CBD5E1",
+  }}
+>
+  The following questions (Q3–Q6) refer to the three options shown in the table above.
+</div>
+
+
+
+	  {/* Q3: consistency */}
+          <div>
+            <div style={{ fontWeight: 700, marginBottom: "0.25rem" }}>
+              3. How consistent are these three options with each other?
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <StarRating value={consistency} onChange={setConsistency} />
+              <span style={{ fontSize: "0.85rem" }}>
+                (1 = Very inconsistent, 5 = Very consistent)
+              </span>
             </div>
           </div>
 
-          {/* Semantic Qs */}
-          <div style={{ marginBottom: '1rem' }}>
-            <div style={labelStyle}>3) How Transparent was the process and the results?</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <StarRating value={semUnderstand} onChange={setSemUnderstand} />
-              <span style={{ fontSize: '0.85rem' }}>(1 = Opaque, 5 = Fully Transparent)</span>
+          {/* Q4: preference */}
+          <div>
+            <div style={{ fontWeight: 700, marginBottom: "0.25rem" }}>
+              4. If you had to pick one now, which model would you actually use? <br />(if your selected model and top-ranked option are the same, please select the top-ranked option)
             </div>
-          </div>
-
-          <div style={{ marginBottom: '1rem' }}>
-            <div style={labelStyle}>4) Did it help you discover options from other disciplines you wouldn’t have otherwise?</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginTop: '6px' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: "1.25rem",
+                fontSize: "0.95rem",
+              }}
+            >
+              <label>
                 <input
                   type="radio"
-                  name="semTrust"
-                  value="Yes"
-                  checked={semTrust === 'Yes'}
-                  onChange={() => setSemTrust('Yes')}
-                />
-                Yes
+                  name="preference"
+                  value="manual"
+                  checked={preference === "manual"}
+                  onChange={() => setPreference("manual")}
+                />{" "}
+                The model I selected manually
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+              <label>
                 <input
                   type="radio"
-                  name="semTrust"
-                  value="No"
-                  checked={semTrust === 'No'}
-                  onChange={() => setSemTrust('No')}
-                />
-                No
+                  name="preference"
+                  value="results"
+                  checked={preference === "results"}
+                  onChange={() => setPreference("results")}
+                />{" "}
+                The model I selected from the results list
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="preference"
+                  value="top"
+                  checked={preference === "top"}
+                  onChange={() => setPreference("top")}
+                />{" "}
+                The top-ranked option in the results list
               </label>
             </div>
           </div>
 
-          <div style={{ marginBottom: '1rem' }}>
-            <div style={labelStyle}>5) How well did the constraints reflect in the final list?</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <StarRating value={semControl} onChange={setSemControl} />
-              <span style={{ fontSize: '0.85rem' }}>(1 = Very Low, 5 = Very High)</span>
+          {/* Q5: confidence */}
+          <div>
+            <div style={{ fontWeight: 700, marginBottom: "0.25rem" }}>
+              5. How confident are you in this final choice?
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <StarRating value={confidence} onChange={setConfidence} />
+              <span style={{ fontSize: "0.85rem" }}>
+                (1 = Not confident, 5 = Very confident)
+              </span>
             </div>
           </div>
 
-          {/* Conditional comparison questions */}
-          {!selectedIsFirst && (
-            <div style={{ marginBottom: '1rem' }}>
-              <div style={labelStyle}>6) Your selected row was not the top result. Please compare:</div>
-
-              {firstLoadErr ? (
-                <div style={{ color: '#CC3333', marginBottom: 8 }}>
-                  Couldn’t load the first-row model for comparison: {firstLoadErr}
-                </div>
-              ) : (
-                <>
-                  <div style={{ margin: '8px 0' }}>
-                    <div style={{ fontWeight: 700, marginBottom: 6 }}>
-                      a) Why do you think your selected model is better?
-                    </div>
-                    <textarea
-                      rows={4}
-                      value={whyBetter}
-                      onChange={(e) => setWhyBetter(e.target.value)}
-                      placeholder="Explain your reasoning…"
-                      style={textareaStyle}
-                    />
-                  </div>
-
-                  <div style={{ margin: '8px 0' }}>
-                    <div style={{ fontWeight: 700, marginBottom: 6 }}>
-                      b) Rate the first-row model:
-                    </div>
-                    <StarRating value={firstRowRating} onChange={setFirstRowRating} />
-                  </div>
-                </>
-              )}
+          {/* Comments */}
+          <div>
+            <div style={{ fontWeight: 700, marginBottom: "0.25rem" }}>
+              6. Any comments about the differences between these options, or about the system in
+              general?
             </div>
-          )}
-
-          {/* Optional free text */}
-          <div style={{ marginBottom: '1rem' }}>
-            <div style={labelStyle}>Additional comments (optional)</div>
             <textarea
-              rows={4}
-              value={feedback}
-              onChange={(e) => setFeedback(e.target.value)}
-              placeholder="Any other comments about your choice or the list…"
-              style={textareaStyle}
+              value={comments}
+              onChange={(e) => setComments(e.target.value)}
+              placeholder="Your comments..."
+              style={{
+                width: "100%",
+                minHeight: "90px",
+                borderRadius: "8px",
+                border: "1px solid #CBD5E1",
+                padding: "0.6rem 0.75rem",
+                fontFamily: "inherit",
+                fontSize: "0.95rem",
+                resize: "vertical",
+                color: "#0f172a",
+              }}
             />
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1.25rem' }}>
-            <button
-              onClick={handleSubmit}
-              disabled={!canSubmit || saving}
-              style={buttonStyle(canSubmit && !saving)}
-              onMouseOver={(e) => {
-                if (canSubmit && !saving) e.currentTarget.style.backgroundColor = '#CC3333';
-              }}
-              onMouseOut={(e) => {
-                if (canSubmit && !saving) e.currentTarget.style.backgroundColor = '#1C39BB';
+          {error && (
+            <div
+              style={{
+                marginTop: "0.4rem",
+                padding: "0.5rem 0.75rem",
+                borderRadius: "8px",
+                backgroundColor: "#FEF2F2",
+                color: "#B91C1C",
+                fontSize: "0.9rem",
               }}
             >
-              {saving ? 'Saving…' : 'Finish'}
+              {error}
+            </div>
+          )}
+
+          {/* Finish button */}
+          <div
+            style={{
+              marginTop: "1rem",
+              display: "flex",
+              justifyContent: "flex-end",
+            }}
+          >
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!isReadyToSubmit()}
+              style={{
+                borderRadius: "8px",
+                padding: "0.6rem 1.8rem",
+                border: "none",
+                fontSize: "1rem",
+                fontWeight: 600,
+                cursor: isReadyToSubmit() ? "pointer" : "not-allowed",
+                backgroundColor: isReadyToSubmit() ? "#1C39BB" : "#94A3B8",
+                color: "white",
+              }}
+              onMouseOver={(e) => {
+                if (isReadyToSubmit()) e.currentTarget.style.backgroundColor = "#CC3333";
+              }}
+              onMouseOut={(e) => {
+                if (isReadyToSubmit()) e.currentTarget.style.backgroundColor = "#1C39BB";
+              }}
+            >
+              Finish
             </button>
           </div>
         </div>
-      </main>
+      </div>
     </div>
   );
-}
+};
+
+export default Thank2Page;

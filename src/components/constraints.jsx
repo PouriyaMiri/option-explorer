@@ -1,525 +1,708 @@
-// src/components/constraints.jsx
-import React, { useMemo, useState, useEffect } from 'react';
+// src/components/Page2.jsx
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { ACTIVITY, PAGE2, METAD } from '../config/endpoints';
+import { getSessionId } from '../session';
+const sessionId = getSessionId();
 
-const ALL_PARAMETERS = [
-  'processing_unit', // categorical
-  'epochs',
+const ACTIVITY_ENDPOINT = ACTIVITY;
+const CONSTRAINTS_ENDPOINT = PAGE2;
+
+// Parameter choices
+const PARAMETER_OPTIONS = [
+  // metrics
+  'accuracy',
+  'precision',
+  'recall',
+  'f1_score',
+  'loss',
+  'training_time',
+  // architecture / resources
+  'processing_unit',
   'RAM',
+  'epochs',
   'batch_size',
-  'pool_size',
-  'kernel_size',
   'layers',
   'nodes',
-  'precision',
-  'f1_score',
-  'training_time',
-  'algorithm',   // categorical
-  'model',       // categorical
-  'accuracy',
-  'recall',
-  'loss',
+  'kernel_size',
+  'pool_size',
+  // semantic
+  'field',
+  'domain',
+  'intent',
+  'algorithm',
+  'model',
 ];
 
-const NUMERIC_PARAMS = new Set([
-  'epochs','RAM','batch_size','pool_size','kernel_size','layers','nodes',
-  'precision','f1_score','training_time','accuracy','recall','loss'
-]);
 
-const CATEGORICAL_ONLY = new Set(['processing_unit','algorithm','model']);
 
-// metrics constrained to [0,1]
-const ZERO_ONE_METRICS = new Set(['accuracy','precision','recall','f1_score','loss']);
 
-const SIGNS = ['=', '>', '<', '>=', '<='];
 
-// number inputs that are integers (use step=1)
-const INTEGERISH = new Set(['epochs','RAM','batch_size','pool_size','kernel_size','layers','nodes']);
+// For display purposes
+const prettyName = (key) => {
+  if (!key) return '';
+  return key
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+};
 
-export default function Constraints() {
+const SIGNS = ['>=', '<=', '=', '>', '<'];
+
+/** fire-and-forget activity logging */
+const ping = (event, meta = {}) =>
+  fetch(ACTIVITY_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-session-id': sessionId },
+    body: JSON.stringify({ event, meta, t_client: new Date().toISOString() }),
+  }).catch(() => {});
+
+const Page2 = () => {
   const navigate = useNavigate();
 
-  // instruction modal
-  const [showInstr, setShowInstr] = useState(false);
+  // dynamic metadata from backend
+  const [meta, setMeta] = useState(null);
+  const [metaError, setMetaError] = useState('');
 
-  const empty = { selectedParameter: '', selectedSign: '', value: '' };
-  const [rows, setRows] = useState([{ ...empty }]);
-  const [errors, setErrors] = useState({}); // { idx: "message", ... }
+  const [groupSize, setGroupSize] = useState(3); // 1,3,5
+  const [assignmentReady, setAssignmentReady] = useState(false);
 
-  const selectedCount = useMemo(
-    () => rows.filter(r => r.selectedParameter).length,
-    [rows]
-  );
-  const canAddMore = selectedCount < 3;
+  // Constraints array, in order
+  const [constraints, setConstraints] = useState([]);
+  // Which index is currently editable
+  const [activeIndex, setActiveIndex] = useState(0);
+  // Lock info (order + timestamp)
+  const [lockEvents, setLockEvents] = useState([]);
 
-  const addRow = () => {
-    if (!canAddMore) return;
-    setRows(prev => [...prev, { ...empty }]);
-  };
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
-  const updateRow = (idx, patch) => {
-    setRows(prev => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
-    setErrors(prev => {
-      const copy = { ...prev };
-      delete copy[idx]; // clear error when user changes something
-      return copy;
-    });
-  };
+  // ----------- METADATA LOAD (dynamic limits/signs) -----------
 
-  const removeRow = (idx) => {
-    setRows(prev => prev.filter((_, i) => i !== idx));
-    setErrors(prev => {
-      const copy = { ...prev };
-      // reindex remaining errors
-      const next = {};
-      Object.entries(copy).forEach(([k, v]) => {
-        const i = Number(k);
-        if (i < idx) next[i] = v;
-        if (i > idx) next[i - 1] = v;
+  useEffect(() => {
+    fetch(METAD)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        setMeta(data.metadata || {});
+      })
+      .catch((err) => {
+        console.error('Failed to load metadata', err);
+        setMetaError(
+          'Failed to load dataset information. Constraints will be less strict.'
+        );
       });
-      return next;
-    });
+  }, []);
+
+  const getParamMeta = (param) => {
+    if (!meta || !param) return null;
+    return meta[param] || null;
   };
 
-  const availableParameters = useMemo(() => {
-    const chosen = new Set(rows.map(r => r.selectedParameter).filter(Boolean));
-    return ALL_PARAMETERS.filter(p => !chosen.has(p));
-  }, [rows]);
-
-  // ---------- validation helpers ----------
-  const validateRow = (r) => {
-    const p = r.selectedParameter;
-    if (!p) return 'Pick a parameter.';
-
-    const isCat = CATEGORICAL_ONLY.has(p);
-    const isNum = NUMERIC_PARAMS.has(p);
-
-    if (isCat) {
-      if (!r.value) return 'Select a category value.';
-      return '';
-    }
-
-    if (isNum) {
-      if (!r.selectedSign) return 'Pick a sign for numeric parameters.';
-      if (r.value === '' || r.value === null || Number.isNaN(Number(r.value))) {
-        return 'Enter a numeric value.';
-      }
-      const val = Number(r.value);
-
-      if (ZERO_ONE_METRICS.has(p)) {
-        if (val < 0 || val > 1) return 'Value must be between 0 and 1.';
-      } else if (!Number.isFinite(val)) {
-        return 'Enter a finite number.';
-      }
-      return '';
-    }
-
-    return 'Unsupported parameter.';
+  const getAllowedSigns = (param) => {
+    const m = getParamMeta(param);
+    if (!m) return SIGNS;
+    if (Array.isArray(m.signs)) return m.signs;
+    if (m.type === 'categorical') return ['='];
+    return SIGNS;
   };
 
-  const coerceValueForDisplay = (p, v) => {
-    if (typeof v === 'string') return v.trim();
-    return v ?? '';
-  };
+  // ----------- ASSIGNMENT: 1 vs 3 vs 5 constraints -----------
 
-  const onParamChange = (idx, p) => {
-    // reset when parameter changes
-    if (CATEGORICAL_ONLY.has(p)) {
-      updateRow(idx, { selectedParameter: p, selectedSign: '=', value: '' });
-    } else if (NUMERIC_PARAMS.has(p)) {
-      updateRow(idx, { selectedParameter: p, selectedSign: '', value: '' });
+  useEffect(() => {
+    // Reuse assignment if present in localStorage for this browser
+    const stored = localStorage.getItem('constraint_group_size');
+    let size;
+    if (stored === '1' || stored === '3' || stored === '5') {
+      size = parseInt(stored, 10);
     } else {
-      updateRow(idx, { selectedParameter: p, selectedSign: '', value: '' });
+      // Randomly choose 1, 3, or 5 with equal probability
+      const options = [1, 3, 5];
+      size = options[Math.floor(Math.random() * options.length)];
+      localStorage.setItem('constraint_group_size', String(size));
     }
-  };
 
-  const onValueChange = (idx, r, raw) => {
-    const p = r.selectedParameter;
-    let val = raw;
+    setGroupSize(size);
+    setConstraints(
+      Array.from({ length: size }, () => ({
+        selectedParameter: '',
+        selectedSign: '>=',
+        value: '',
+        locked: false,
+        lockedAt: null,
+      })),
+    );
+    setActiveIndex(0);
+    setLockEvents([]);
 
-    if (NUMERIC_PARAMS.has(p) && raw !== '') {
-      // keep the string in state so the input cursor behaves, but block bad chars
-      const cleaned = raw.replace(/[^\d.\-eE+]/g, '');
-      if (ZERO_ONE_METRICS.has(p)) {
-        const n = Number(cleaned);
-        if (!Number.isNaN(n)) {
-          if (n < 0) val = '0';
-          else if (n > 1) val = '1';
-          else val = cleaned;
-        } else {
-          val = cleaned;
+    ping('page2_assignment', { groupSize: size });
+    setAssignmentReady(true);
+  }, []);
+
+  const isThreeConstraintGroup = useMemo(() => groupSize === 3, [groupSize]);
+
+  const requiredForThree = useMemo(
+    () => new Set(['accuracy', 'precision', 'processing_unit']),
+    [],
+  );
+
+  const selectedParams = useMemo(
+    () => constraints.map((c) => (c.selectedParameter || '').trim()),
+    [constraints],
+  );
+
+  // whether all constraints are locked
+  const allLocked = useMemo(
+    () => assignmentReady && groupSize > 0 && constraints.every((c) => c.locked),
+    [assignmentReady, groupSize, constraints],
+  );
+
+  const threeGroupValid = useMemo(() => {
+    if (!isThreeConstraintGroup) return true;
+    if (!allLocked) return false;
+    const set = new Set(selectedParams.filter(Boolean));
+    if (set.size !== 3) return false;
+    for (const p of requiredForThree) {
+      if (!set.has(p)) return false;
+    }
+    return true;
+  }, [isThreeConstraintGroup, allLocked, selectedParams, requiredForThree]);
+
+  const canProceed = allLocked && threeGroupValid && !submitting;
+
+  // ----------- HANDLERS -----------
+
+  const handleParamChange = (idx, param) => {
+    if (idx !== activeIndex) return; // enforce in-order
+
+    setConstraints((prev) =>
+      prev.map((c, i) => {
+        if (i !== idx) return c;
+        const next = { ...c, selectedParameter: param };
+
+        const m = getParamMeta(param);
+        // Categorical (e.g. processing_unit) → force '='
+        if (m && m.type === 'categorical') {
+          next.selectedSign = '=';
         }
-      } else {
-        val = cleaned;
-      }
-    }
 
-    updateRow(idx, { value: val });
+        return next;
+      }),
+    );
+
+    ping('page2_param_changed', { index: idx, param });
   };
 
-  const handleSubmit = async () => {
-    // trim to first 3 with a selected parameter, in order
-    const ordered = rows
-      .filter(r => r.selectedParameter)
-      .slice(0, 3);
+  const handleSignChange = (idx, sign) => {
+    if (idx !== activeIndex) return;
+    setConstraints((prev) =>
+      prev.map((c, i) => (i === idx ? { ...c, selectedSign: sign } : c)),
+    );
+    ping('page2_sign_changed', { index: idx, sign });
+  };
 
-    // validate
-    const nextErrors = {};
-    ordered.forEach((r, i) => {
-      const msg = validateRow(r);
-      if (msg) nextErrors[i] = msg;
-    });
-    setErrors(nextErrors);
-    if (Object.keys(nextErrors).length || ordered.length === 0) {
-      if (ordered.length === 0) alert('Please add at least one valid constraint.');
+  const handleValueChange = (idx, value) => {
+    if (idx !== activeIndex) return;
+    setConstraints((prev) =>
+      prev.map((c, i) => (i === idx ? { ...c, value } : c)),
+    );
+  };
+
+  const handleLock = (idx) => {
+    if (idx !== activeIndex) return;
+
+    const c = constraints[idx];
+    const param = c.selectedParameter;
+    const raw = (c.value || '').trim();
+    const m = getParamMeta(param);
+
+    if (!param || !raw) {
+      setErrorMsg('Please fill parameter and value before locking.');
       return;
     }
 
-    // payload the server expects: { constraints: [ {selectedParameter, selectedSign, value}, ... ] }
-    const payload = ordered.map((r) => ({
-      selectedParameter: r.selectedParameter,
-      selectedSign: CATEGORICAL_ONLY.has(r.selectedParameter) ? '=' : r.selectedSign,
-      value: r.value,
+    // Categorical validation (e.g. processing_unit CPU/GPU)
+    if (m && m.type === 'categorical') {
+      const allowed = new Set(m.values || []);
+      if (!allowed.has(raw)) {
+        setErrorMsg(
+          `Value for ${prettyName(param)} must be one of: ${Array.from(allowed).join(
+            ', ',
+          )}`,
+        );
+        return;
+      }
+    }
+
+    // Numeric range validation (e.g. accuracy in [0,1])
+    if (m && m.type === 'numeric') {
+      const num = Number(raw.replace(',', '.'));
+      if (!Number.isFinite(num)) {
+        setErrorMsg(`Value for ${prettyName(param)} must be a number.`);
+        return;
+      }
+      if (m.min != null && num < m.min) {
+        setErrorMsg(
+          `Value for ${prettyName(param)} must be at least ${m.min}.`,
+        );
+        return;
+      }
+      if (m.max != null && num > m.max) {
+        setErrorMsg(
+          `Value for ${prettyName(param)} must be at most ${m.max}.`,
+        );
+        return;
+      }
+    }
+
+    setErrorMsg('');
+
+    const now = Date.now();
+    const iso = new Date(now).toISOString();
+
+    setConstraints((prev) =>
+      prev.map((row, i) =>
+        i === idx ? { ...row, locked: true, lockedAt: iso } : row,
+      ),
+    );
+
+    setLockEvents((prev) => [
+      ...prev,
+      {
+        index: idx,
+        order: idx + 1,
+        t: iso,
+        selectedParameter: c.selectedParameter,
+        selectedSign: c.selectedSign,
+        value: c.value,
+      },
+    ]);
+
+    // Advance to next constraint if any
+    if (idx + 1 < groupSize) {
+      setActiveIndex(idx + 1);
+    }
+
+    ping('page2_constraint_locked', {
+      index: idx,
+      order: idx + 1,
+      param: c.selectedParameter,
+      sign: c.selectedSign,
+      value: c.value,
+      t_locked: iso,
+    });
+  };
+
+
+  const handleUnlock = (idx) => {
+    // Allow unlocking any locked row
+    setConstraints((prev) =>
+      prev.map((row, i) =>
+        i === idx ? { ...row, locked: false, lockedAt: null } : row,
+      ),
+    );
+
+    // Make this row the active editable one again
+    setActiveIndex(idx);
+
+    // Clear any generic error message
+    setErrorMsg('');
+
+    // Optional logging
+    ping('page2_constraint_unlocked', { index: idx });
+  };
+	
+  const handleSubmit = async () => {
+    if (!canProceed) return;
+    setSubmitting(true);
+    setErrorMsg('');
+
+    // Build minimal constraints array in the shape backend expects:
+    //  [{ selectedParameter, selectedSign, value }, ...]
+    const pureConstraints = constraints.map((c) => ({
+      selectedParameter: c.selectedParameter,
+      selectedSign: c.selectedSign,
+      value: c.value,
     }));
 
+    // 1) Log detailed click/assignment info to activity
+    ping('page2_submit_constraints', {
+      groupSize,
+      lockEvents,
+      constraints: pureConstraints,
+    });
+
     try {
-      const res = await fetch('http://194.249.2.210:3001/page2/constraints', {
+      // 2) Send constraints to backend; this triggers ranking / MDP pipeline
+      const res = await fetch(CONSTRAINTS_ENDPOINT, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ constraints: payload }),
+        headers: { 'Content-Type': 'application/json', 'x-session-id': sessionId },
+        body: JSON.stringify({ sessionId, constraints: pureConstraints }),
       });
-      if (!res.ok) throw new Error('Failed to save constraints');
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      // 3) Start MDP timer -> stored in localStorage so Results page can read it
+      const now = Date.now();
+      localStorage.setItem('mdp_start_time', String(now));
+      ping('mdp_timer_start', { t_client: new Date(now).toISOString() });
+
+      // 4) Go to results page; MDP_time will be closed when user clicks Next there
       navigate('/results');
-    } catch (e) {
-      alert('Error sending constraints to backend.');
+    } catch (err) {
+      console.error(err);
+      setErrorMsg('Failed to submit constraints. Please try again.');
+      setSubmitting(false);
     }
   };
 
-  // Close modal on Escape for better UX
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === 'Escape') setShowInstr(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  // ----------- UI -----------
+
+  const groupDescription = useMemo(() => {
+    if (!assignmentReady) return '';
+    if (groupSize === 1) {
+      return 'You have been assigned to select exactly 1 constraint of your choice.';
+    }
+    if (groupSize === 3) {
+      return 'You have been assigned to select exactly 3 constraints: accuracy, precision, and processing unit (in any order).';
+    }
+    if (groupSize === 5) {
+      return 'You have been assigned to select exactly 5 constraints of your choice.';
+    }
+    return '';
+  }, [assignmentReady, groupSize]);
 
   return (
-    <div style={{ minHeight: '100vh', background: 'white', color: '#1C39BB' }}>
-      <header style={{ padding: '32px 20px 0' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <h1 style={{ margin: 0, fontSize: '1.4rem', fontWeight: 900 }}>
-            Select Constraints
-          </h1>
-          <button
-            type="button"
-            onClick={() => setShowInstr(true)}
-            style={{
-              marginLeft: '5px',
-              background: '#1C39BB',
-              color: 'white',
-              border: 'none',
-              borderRadius: 8,
-              padding: '8px 12px',
-              cursor: 'pointer'
-            }}
-            onMouseOver={(e) => (e.currentTarget.style.background = '#CC3333')}
-            onMouseOut={(e) => (e.currentTarget.style.background = '#1C39BB')}
-            title="Recheck instructions"
-          >
-            Instructions
-          </button>
-        </div>
-
-        <p style={{ marginTop: 8, color: '#4C63C9' }}>
-          Your first choice has weight <strong>3</strong>, the second <strong>2</strong>, and the third <strong>1</strong>.
+    <div style={{ padding: '24px', color: '#1C39BB' }}>
+      <div
+        style={{
+          maxWidth: '960px',
+          margin: '0 auto',
+          backgroundColor: '#F7FAFF',
+          borderRadius: '12px',
+          border: '1px solid #CBD5E1',
+          boxShadow: '0 8px 20px rgba(15,23,42,0.08)',
+          padding: '20px',
+        }}
+      >
+        <h1 style={{ fontSize: '1.4rem', fontWeight: 800, marginBottom: '0.75rem' }}>
+          Constraint Selection
+        </h1>
+        <p style={{ fontSize: '0.95rem', lineHeight: 1.6, marginBottom: '1rem' }}>
+          On this page, you will configure constraints for Option Explorer. You must
+          complete the required number of constraints in order before you can continue.
         </p>
-      </header>
 
-      <main style={{ padding: 20 }}>
+        {metaError && (
+          <div
+            style={{
+              marginBottom: '0.75rem',
+              padding: '0.5rem 0.75rem',
+              borderRadius: '6px',
+              backgroundColor: '#FEF3C7',
+              color: '#92400E',
+              fontSize: '0.9rem',
+            }}
+          >
+            {metaError}
+          </div>
+        )}
+
+        {assignmentReady ? (
+          <div
+            style={{
+              marginBottom: '1rem',
+              padding: '0.75rem 1rem',
+              borderRadius: '8px',
+              backgroundColor: '#E0EBFF',
+            }}
+          >
+            <strong>Assignment:</strong>{' '}
+            <span>{groupDescription}</span>
+          </div>
+        ) : (
+          <p>Assigning your condition…</p>
+        )}
+
+        {isThreeConstraintGroup && (
+          <p style={{ fontSize: '0.9rem', marginBottom: '1rem' }}>
+            Required parameters (in any order):{' '}
+            <strong>accuracy</strong>, <strong>precision</strong>,{' '}
+            <strong>processing unit</strong>.
+          </p>
+        )}
+
+        {errorMsg && (
+          <div
+            style={{
+              marginBottom: '1rem',
+              padding: '0.5rem 0.75rem',
+              borderRadius: '6px',
+              backgroundColor: '#FEF2F2',
+              color: '#B91C1C',
+              fontSize: '0.9rem',
+            }}
+          >
+            {errorMsg}
+          </div>
+        )}
+
+        {/* Constraints table */}
         <div
           style={{
-            width: '100%',
-            maxWidth: 980,
-            background: '#F7FAFF',
-            border: '1px solid #D0DAFF',
-            borderRadius: 14,
-            boxShadow: '0 6px 16px rgba(28,57,187,0.10)',
-            padding: 18,
-            margin: '0 auto',
+            marginTop: '1rem',
+            borderRadius: '10px',
+            border: '1px solid #CBD5E1',
+            overflow: 'hidden',
           }}
         >
-          {rows.map((row, idx) => {
-            const isNumeric = NUMERIC_PARAMS.has(row.selectedParameter);
-            const isCategorical = CATEGORICAL_ONLY.has(row.selectedParameter);
-            const errMsg = errors[idx];
-
-            return (
-              <div
-                key={idx}
+          <table
+            style={{
+              width: '100%',
+              borderCollapse: 'collapse',
+              backgroundColor: 'white',
+            }}
+          >
+            <thead>
+              <tr
                 style={{
-                  border: '1px solid #BFD0FF',
-                  borderRadius: 10,
-                  padding: 12,
-                  marginBottom: 12,
-                  background: 'white',
+                  backgroundColor: '#E5EDFF',
+                  textAlign: 'left',
+                  fontSize: '0.9rem',
                 }}
               >
-                <div style={{ display: 'grid', gap: 10, gridTemplateColumns: '1fr 1fr 1fr 1fr auto' }}>
-                  {/* Parameter */}
-                  <div>
-                    <div style={{ fontWeight: 700, marginBottom: 6 }}>Parameter</div>
-                    <select
-                      value={row.selectedParameter}
-                      onChange={(e) => onParamChange(idx, e.target.value)}
-                      style={{
-                        width: '100%', padding: '10px 12px', borderRadius: 8,
-                        border: '1px solid #1C39BB', color: '#1C39BB', background: 'white'
-                      }}
-                    >
-                      <option value="">Select parameter</option>
-                      {[row.selectedParameter, ...availableParameters]
-                        .filter(Boolean)
-                        .filter((v, i, a) => a.indexOf(v) === i)
-                        .map((p) => (
-                          <option key={p} value={p}>{p}</option>
-                        ))}
-                    </select>
-                  </div>
+                <th style={{ padding: '8px 10px', width: '5%' }}>#</th>
+                <th style={{ padding: '8px 10px', width: '30%' }}>Parameter</th>
+                <th style={{ padding: '8px 10px', width: '15%' }}>Sign</th>
+                <th style={{ padding: '8px 10px', width: '30%' }}>Value</th>
+                <th style={{ padding: '8px 10px', width: '20%' }}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {constraints.map((c, idx) => {
+                const isActive = idx === activeIndex && !c.locked;
+                const disabled = !isActive || submitting || !assignmentReady;
+                const paramMeta = getParamMeta(c.selectedParameter);
 
-                  {/* Sign */}
-                  <div>
-                    <div style={{ fontWeight: 700, marginBottom: 6 }}>Sign</div>
-                    <select
-                      disabled={isCategorical || !row.selectedParameter}
-                      value={isCategorical ? '=' : row.selectedSign}
-                      onChange={(e) => updateRow(idx, { selectedSign: e.target.value })}
-                      style={{
-                        width: '100%', padding: '10px 12px', borderRadius: 8,
-                        border: '1px solid #1C39BB',
-                        color: '#1C39BB',
-                        background: (isCategorical || !row.selectedParameter) ? '#F1F5FF' : 'white'
-                      }}
-                    >
-                      <option value="">—</option>
-                      {SIGNS.map((s) => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                  </div>
-
-                  {/* Value */}
-                  <div>
-                    <div style={{ fontWeight: 700, marginBottom: 6 }}>
-                      {isCategorical ? 'Value (category)' : 'Value'}
-                    </div>
-
-                    {isCategorical ? (
+                return (
+                  <tr
+                    key={idx}
+                    style={{
+                      borderBottom: '1px solid #E5E7EB',
+                      backgroundColor: c.locked ? '#F1F5F9' : 'white',
+                    }}
+                  >
+                    <td style={{ padding: '8px 10px' }}>{idx + 1}</td>
+                    <td style={{ padding: '8px 10px' }}>
                       <select
-                        value={coerceValueForDisplay(row.selectedParameter, row.value)}
-                        onChange={(e) => updateRow(idx, { value: e.target.value })}
+                        value={c.selectedParameter}
+                        disabled={disabled}
+                        onChange={(e) => handleParamChange(idx, e.target.value)}
                         style={{
-                          width: '100%', padding: '10px 12px', borderRadius: 8,
-                          border: '1px solid #1C39BB', color: '#1C39BB', background: 'white'
+                          width: '100%',
+                          borderRadius: '6px',
+                          padding: '4px 6px',
+                          border: '1px solid #CBD5E1',
+                          backgroundColor: disabled ? '#F9FAFB' : 'white',
                         }}
                       >
-                        <option value="">Select…</option>
-                        {row.selectedParameter === 'processing_unit' && (
-                          <>
-                            <option value="CPU">CPU</option>
-                            <option value="GPU">GPU</option>
-                          </>
-                        )}
-                        {row.selectedParameter === 'algorithm' && (
-                          <>
-                            <option value="SVM">SVM</option>
-                            <option value="RandomForest">RandomForest</option>
-                            <option value="CNN">CNN</option>
-                            <option value="RNN">RNN</option>
-                          </>
-                        )}
-                        {row.selectedParameter === 'model' && (
-                          <>
-                            <option value="ResNet">ResNet</option>
-                            <option value="VGG">VGG</option>
-                            <option value="MobileNet">MobileNet</option>
-                          </>
-                        )}
+                        <option value="">Select parameter…</option>
+                        {PARAMETER_OPTIONS.map((p) => (
+                          <option key={p} value={p}>
+                            {prettyName(p)}
+                          </option>
+                        ))}
                       </select>
-                    ) : (
-                      <input
-                        type="number"
-                        value={coerceValueForDisplay(row.selectedParameter, row.value)}
-                        onChange={(e) => onValueChange(idx, row, e.target.value)}
-                        disabled={!isNumeric || !row.selectedSign}
-                        step={
-                          ZERO_ONE_METRICS.has(row.selectedParameter) ? '0.01'
-                          : INTEGERISH.has(row.selectedParameter) ? '1'
-                          : '0.1'
-                        }
-                        min={ZERO_ONE_METRICS.has(row.selectedParameter) ? '0' : undefined}
-                        max={ZERO_ONE_METRICS.has(row.selectedParameter) ? '1' : undefined}
-                        placeholder={
-                          isNumeric
-                            ? ZERO_ONE_METRICS.has(row.selectedParameter)
-                              ? 'e.g. 0.80'
-                              : 'Enter number'
-                            : '—'
-                        }
+                    </td>
+                    <td style={{ padding: '8px 10px' }}>
+                      <select
+                        value={c.selectedSign}
+                        disabled={disabled}
+                        onChange={(e) => handleSignChange(idx, e.target.value)}
                         style={{
-                          width: '100%', padding: '10px 12px', borderRadius: 8,
-                          border: '1px solid #1C39BB', color: '#1C39BB',
-                          background: isNumeric && row.selectedSign ? 'white' : '#F1F5FF'
+                          width: '100%',
+                          borderRadius: '6px',
+                          padding: '4px 6px',
+                          border: '1px solid #CBD5E1',
+                          backgroundColor: disabled ? '#F9FAFB' : 'white',
                         }}
-                      />
-                    )}
-                  </div>
+                      >
+                        {getAllowedSigns(c.selectedParameter).map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td style={{ padding: '8px 10px' }}>
+                      {/* Dynamic value input: dropdown for categorical, ranged number for numeric */}
+                      {paramMeta && paramMeta.type === 'categorical' ? (
+                        <select
+                          value={c.value}
+                          disabled={disabled}
+                          onChange={(e) => handleValueChange(idx, e.target.value)}
+                          style={{
+                            width: '100%',
+                            borderRadius: '6px',
+                            padding: '4px 6px',
+                            border: '1px solid #CBD5E1',
+                            backgroundColor: disabled ? '#F9FAFB' : 'white',
+                          }}
+                        >
+                          <option value="">Select value…</option>
+                          {(paramMeta.values || []).map((v) => (
+                            <option key={v} value={v}>
+                              {v}
+                            </option>
+                          ))}
+                        </select>
+                      ) : paramMeta && paramMeta.type === 'numeric' ? (
+                        <input
+                          type="number"
+                          value={c.value}
+                          disabled={disabled}
+                          min={paramMeta.min != null ? paramMeta.min : undefined}
+                          max={paramMeta.max != null ? paramMeta.max : undefined}
+                          step={0.01}
+                          onChange={(e) => handleValueChange(idx, e.target.value)}
+                          placeholder={
+                            paramMeta.min != null && paramMeta.max != null
+                              ? `Between ${paramMeta.min} and ${paramMeta.max}`
+                              : 'Enter numeric value…'
+                          }
+                          style={{
+                            width: '100%',
+                            borderRadius: '6px',
+                            padding: '4px 6px',
+                            border: '1px solid #CBD5E1',
+                            backgroundColor: disabled ? '#F9FAFB' : 'white',
+                          }}
+                        />
+                      ) : (
+                        <input
+                          type="text"
+                          value={c.value}
+                          disabled={disabled}
+                          onChange={(e) => handleValueChange(idx, e.target.value)}
+                          placeholder="Enter value…"
+                          style={{
+                            width: '100%',
+                            borderRadius: '6px',
+                            padding: '4px 6px',
+                            border: '1px solid #CBD5E1',
+                            backgroundColor: disabled ? '#F9FAFB' : 'white',
+                          }}
+                        />
+                      )}
+                    </td>
+                    <td style={{ padding: '8px 10px' }}>
+			{c.locked ? (
+				<div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+				<span style={{ fontSize: '0.85rem', color: '#16A34A' }}>
+				   Locked {c.lockedAt ? `(${c.lockedAt})` : ''}
+				</span>
+      				<button
+        				type="button"
+        				disabled={submitting || !assignmentReady}
+        				onClick={() => handleUnlock(idx)}
+        				style={{
+          					padding: '4px 8px',
+          					borderRadius: '6px',
+          					border: '1px solid #CBD5E1',
+          					fontSize: '0.8rem',
+          					fontWeight: 500,
+          					color: '#1C39BB',
+          					cursor: submitting || !assignmentReady ? 'not-allowed' : 'pointer',
+          					backgroundColor: 'white',
+       	 				}}
+        				onMouseOver={(e) => {
+          					if (!submitting && assignmentReady)
+            					   e.currentTarget.style.backgroundColor = '#E5EDFF';
+        				}}
+        				onMouseOut={(e) => {
+          					e.currentTarget.style.backgroundColor = 'white';
+        				}}
+      				       >
+        			Unlock
+      			    </button>
+    			</div>
+  		) : (
+    			<button
+      			  type="button"
+      			  disabled={disabled}
+      			  onClick={() => handleLock(idx)}
+      			  style={{
+     			   padding: '6px 10px',
+     			   borderRadius: '6px',
+     			   border: 'none',
+     			   fontSize: '0.9rem',
+    			   fontWeight: 600,
+    			   color: 'white',
+      			   cursor: disabled ? 'not-allowed' : 'pointer',
+     			   backgroundColor: disabled ? '#94A3B8' : '#1C39BB',
+     			  }}
+      			onMouseOver={(e) => {
+        			if (!disabled)
+          				e.currentTarget.style.backgroundColor = '#CC3333';
+      			}}
+     	 		onMouseOut={(e) => {
+       			 if (!disabled)
+        		  e.currentTarget.style.backgroundColor = '#1C39BB';
+      			}}
+    			>
+      			Lock
+    		</button>
+ 	       )}
+		</td>
 
-                  {/* Order (weight hint) */}
-                  <div>
-                    <div style={{ fontWeight: 700, marginBottom: 6, marginLeft: 20 }}>Order</div>
-                    <div style={{
-                      height: 40, display: 'flex', alignItems: 'center', marginLeft: 20,
-                      justifyContent: 'center', border: '1px dashed #BFD0FF', borderRadius: 8,
-                      color: '#4C63C9'
-                    }}>
-                      {idx + 1} <span style={{ marginLeft: 6, fontSize: 12, color: '#7A93FF' }}>
-                      </span>
-                    </div>
-                  </div>
 
-                  {/* Remove */}
-                  <div style={{ display: 'flex', alignItems: 'end', justifyContent: 'flex-end' }}>
-                    <button
-                      type="button"
-                      onClick={() => removeRow(idx)}
-                      style={{
-                        background: '#EEF2FF', color: '#1C39BB', border: '1px solid #BFD0FF',
-                        padding: '8px 12px', borderRadius: 8, cursor: 'pointer'
-                      }}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
 
-                {errMsg && (
-                  <div style={{ marginTop: 8, color: '#CC3333', fontSize: 13 }}>
-                    {errMsg}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
-            <div style={{ color: '#4C63C9' }}>Selected: {selectedCount} / 3</div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                type="button"
-                onClick={addRow}
-                disabled={!canAddMore}
-                style={{
-                  background: canAddMore ? '#1C39BB' : '#9DB0FF',
-                  color: 'white', border: 'none', padding: '10px 14px',
-                  borderRadius: 8, cursor: canAddMore ? 'pointer' : 'not-allowed'
-                }}
-                onMouseOver={(e) => { if (canAddMore) e.currentTarget.style.background = '#CC3333'; }}
-                onMouseOut={(e) => { if (canAddMore) e.currentTarget.style.background = '#1C39BB'; }}
-              >
-                Add Constraint
-              </button>
-
-              <button
-                type="button"
-                onClick={handleSubmit}
-                disabled={selectedCount === 0}
-                style={{
-                  background: selectedCount > 0 ? '#1C39BB' : '#9DB0FF',
-                  color: 'white', border: 'none', padding: '10px 16px',
-                  borderRadius: 8, cursor: selectedCount > 0 ? 'pointer' : 'not-allowed'
-                }}
-                onMouseOver={(e) => { if (selectedCount > 0) e.currentTarget.style.background = '#CC3333'; }}
-                onMouseOut={(e) => { if (selectedCount > 0) e.currentTarget.style.background = '#1C39BB'; }}
-              >
-                Next
-              </button>
-            </div>
-          </div>
+			</tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
-      </main>
 
-      {/* ---- Instruction Modal ---- */}
-      {showInstr && (
+        {/* Footer actions */}
         <div
-          role="dialog"
-          aria-modal="true"
           style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0,0,0,0.35)',
+            marginTop: '1.25rem',
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999
+            justifyContent: 'flex-end',
+            gap: '0.75rem',
           }}
-          onClick={() => setShowInstr(false)}
         >
-          <div
-            onClick={(e) => e.stopPropagation()}
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={!canProceed}
             style={{
-              width: 'min(720px, 92vw)',
-              background: '#FFFFFF',
-              border: '2px solid #1C39BB',
-              borderRadius: 12,
-              boxShadow: '0 16px 40px rgba(28,57,187,0.25)',
-              padding: 20,
-              color: '#1C39BB'
+              borderRadius: '8px',
+              padding: '0.6rem 1.6rem',
+              border: 'none',
+              fontSize: '1rem',
+              fontWeight: 600,
+              cursor: canProceed ? 'pointer' : 'not-allowed',
+              backgroundColor: canProceed ? '#1C39BB' : '#94A3B8',
+              color: 'white',
+            }}
+            onMouseOver={(e) => {
+              if (canProceed) e.currentTarget.style.backgroundColor = '#CC3333';
+            }}
+            onMouseOut={(e) => {
+              if (canProceed) e.currentTarget.style.backgroundColor = '#1C39BB';
             }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 900 }}>Instructions</h2>
-              <button
-                onClick={() => setShowInstr(false)}
-                aria-label="Close"
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  fontSize: 22,
-                  color: '#1C39BB',
-                  cursor: 'pointer',
-                  lineHeight: 1
-                }}
-              >
-                ×
-              </button>
-            </div>
-
-            <div style={{ marginTop: 10, lineHeight: 1.55 }}>
-              <p style={{ marginTop: 0 }}>
-              Imagine you are a <strong>computer vision researcher</strong> at the start of a facial video analysis project. You have access to a large database of published papers with different models, datasets, and metrics. Your goal is to choose a solid starting point that meets baseline performance. <br />
-              Your Supervisor requested a model that has at least <strong>80% accuracy</strong>, at least <strong>90% precision</strong> and your hardware is a <strong>GPU</strong> to give you more computational resource, you need to select a model that meets all the requirements with balanced metrics. <br />Accuracy is how often predictions are correct. <br />Precision is how many of the predicted positives are actually correct.<br /> <br /> <strong>When you decide, click a row and then “Next”.</strong>
-            </p>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-              <button
-                onClick={() => setShowInstr(false)}
-                style={{
-                  background: '#1C39BB',
-                  color: '#FFFFFF',
-                  border: 'none',
-                  borderRadius: 8,
-                  padding: '10px 16px',
-                  cursor: 'pointer'
-                }}
-                onMouseOver={(e) => (e.currentTarget.style.background = '#CC3333')}
-                onMouseOut={(e) => (e.currentTarget.style.background = '#1C39BB')}
-              >
-                Got it
-              </button>
-            </div>
-          </div>
+            Next
+          </button>
         </div>
-      )}
+      </div>
     </div>
   );
-}
+};
+
+export default Page2;

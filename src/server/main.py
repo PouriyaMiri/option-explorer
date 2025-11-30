@@ -5,11 +5,13 @@ import os
 import time
 import pandas as pd
 import numpy as np
+import csv
 
 from graph_world import GraphWorld
 from policy_iteration import PolicyIteration
 from initial_transition_generator import generate_initial_transition_model
-from utils import Utils  # includes filter_dataFrame and case-insensitive col resolution
+from utils import Utils, normalize_numeric  # filter, col resolution, numeric normalization
+
 
 # Columns where larger is better
 UP_BETTER = {
@@ -29,8 +31,12 @@ def parse_args():
     p.add_argument("--output", required=True, help="Where to save ranked list CSV")
     p.add_argument("--json-output", required=True, help="Where to save ranked list JSON")
     p.add_argument("--topk", type=int, default=0, help="Optional: keep only top-K rows (0 = keep all)")
-    p.add_argument("--arch-cols", nargs="+", default=["domain", "algorithm", "model"],
-                   help="Columns used as model architecture keys for transition generation")
+    p.add_argument(
+        "--arch-cols",
+        nargs="+",
+        default=["domain", "algorithm", "model"],
+        help="Columns used as model architecture keys for transition generation",
+    )
     return p.parse_args()
 
 
@@ -61,40 +67,6 @@ def load_constraints(path_json):
     return constraints_map, weights
 
 
-def normalize_numeric(s: pd.Series, higher_is_better: bool) -> pd.Series:
-    s = pd.to_numeric(s, errors='coerce')
-    if s.isna().all():
-        return pd.Series(np.zeros(len(s)), index=s.index)
-    mn, mx = np.nanmin(s.values), np.nanmax(s.values)
-    if mx == mn:
-        # all equal: neutral 1 so weight contributes uniformly
-        out = pd.Series(np.ones(len(s)), index=s.index)
-        return out if higher_is_better else (1.0 - out)
-    base = (s - mn) / (mx - mn)
-    return base if higher_is_better else (1.0 - base)
-
-
-def _resolve_col(df: pd.DataFrame, key: str) -> str | None:
-    """Case-insensitive resolution, with simple aliases (mirrors Utils logic)."""
-    if key in df.columns:
-        return key
-    lk = str(key).lower()
-    lower_map = {c.lower(): c for c in df.columns}
-    if lk in lower_map:
-        return lower_map[lk]
-    aliases = {
-        'acc': 'accuracy',
-        'prec': 'precision',
-        'rec': 'recall',
-        'f1': 'f1_score',
-        'time': 'training_time',
-    }
-    aliased = aliases.get(lk)
-    if aliased and aliased.lower() in lower_map:
-        return lower_map[aliased.lower()]
-    return None
-
-
 def compute_weighted_utility(df: pd.DataFrame, weights: dict, constraints_map: dict) -> pd.Series:
     """
     - Numeric columns: min-max normalized (↑ for UP_BETTER, ↓ for DOWN_BETTER).
@@ -107,11 +79,12 @@ def compute_weighted_utility(df: pd.DataFrame, weights: dict, constraints_map: d
     total = pd.Series(np.zeros(len(df)), index=df.index, dtype=float)
 
     for raw_col, w in weights.items():
-        col = raw_col if raw_col in df.columns else _resolve_col(df, raw_col)
+        # Prefer exact column, fall back to Utils._resolve_col (case-insensitive + aliases)
+        col = raw_col if raw_col in df.columns else Utils._resolve_col(df, raw_col)
         if not col:
             continue
 
-        numeric = pd.to_numeric(df[col], errors='coerce')
+        numeric = pd.to_numeric(df[col], errors="coerce")
         if numeric.notna().sum() > 0:
             # decide direction
             cname = col if col in UP_BETTER or col in DOWN_BETTER else col.lower()
@@ -152,22 +125,21 @@ def main():
     # Early exit: no rows
     if df_filtered.empty:
         pd.DataFrame().to_csv(args.output, index=False)
-        with open(args.json_output, "w", encoding="utf-8") as f:
-            json.dump({"rows": [], "ts": time.time()}, f)
         print("[main.py] Filter removed all rows; wrote empty ranked list.")
         return
 
     # 4) Optional: produce/refresh transition model artifact if a path was provided
     if args.probability:
-      try:
-          os.makedirs(os.path.dirname(args.probability), exist_ok=True)
-          generate_initial_transition_model(
-              df_filtered, df_filtered,
-              modelArchitecture=args.arch_cols,
-              file_name=args.probability
-          )
-      except Exception as e:
-          print(f"[main.py] Transition artifact step skipped: {e}")
+        try:
+            os.makedirs(os.path.dirname(args.probability), exist_ok=True)
+            generate_initial_transition_model(
+                df_filtered,
+                df_filtered,
+                modelArchitecture=args.arch_cols,
+                file_name=args.probability,
+            )
+        except Exception as e:
+            print(f"[main.py] Transition artifact step skipped: {e}")
 
     # 5) Compute weighted utility (3/2/1) robustly for mixed types
     df_scores = df_filtered.copy()
@@ -177,7 +149,13 @@ def main():
     try:
         if args.probability and os.path.exists(args.probability):
             gw = GraphWorld(df_filtered, args.probability, {}, {})
-            solver = PolicyIteration(gw.reward_function, gw.transition_model, gamma=0.9, theta=0.005)
+            solver = PolicyIteration(
+                gw.reward_function,
+                gw.transition_model,
+                gamma=0.9,
+                theta=0.005,
+                # max_iters left as default in the class
+            )
             gw.set_utility_values(solver.get_utility_values())
     except Exception as e:
         print(f"[main.py] Graph/MDP step skipped due to: {e}")
@@ -189,11 +167,13 @@ def main():
 
     # 8) Save CSV AND JSON (server reads JSON; CSV is for download/inspection)
     ranked.to_csv(args.output, index=False)
-    with open(args.json_output, "w", encoding="utf-8") as f:
-        json.dump({"rows": ranked.to_dict(orient="records"), "ts": time.time()}, f)
+    
 
     dt = time.time() - t0
-    print(f"[main.py] Ranked list saved to: {args.output} & {args.json_output}  (rows={len(ranked)})  in {dt:.2f}s")
+    print(
+        f"[main.py] Ranked list saved to: {args.output} & {args.json_output}  "
+        f"(rows={len(ranked)})  in {dt:.2f}s"
+    )
 
 
 if __name__ == "__main__":

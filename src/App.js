@@ -5,7 +5,6 @@ import ThanksPage from './components/ThanksPage';
 import Constraints from './components/constraints';
 import Results from './components/Results'
 import Thanks2 from './components/thanks'
-import Final from './components/final'
 
 function App() {
   return (
@@ -17,7 +16,7 @@ function App() {
         <Route path="/thanks" element={<ThanksPage />} />
         <Route path="/results" element={<Results />} />
         <Route path="/thanks2" element={<Thanks2 />} />
-        <Route path="/final" element={<Final />} />
+
       </Routes>
     </Router>
   );

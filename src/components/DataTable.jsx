@@ -31,16 +31,50 @@ const getTotalTableWidth = () => {
   return Object.values(columnWidths).reduce((sum, width) => sum + width, 0);
 };
 
-const DataTable = ({ onRowSelect, onSortChange, selectedRow }) => {
-  const [data, setData] = useState([]);
+const DataTable = ({ onRowSelect, onSortChange, selectedRow, csvUrl = '/data/data.csv', showFieldFilter = true, onDataLoaded,rows: initialRows }) => {
+  const [data, setData] = useState(initialRows || []);
   const [headers, setHeaders] = useState([]);
   const [selectedField, setSelectedField] = useState('');
   const [uniqueFields, setUniqueFields] = useState([]);
   const [sortColumns, setSortColumns] = useState([]);
   const [fieldKey, setFieldKey] = useState('');
+  const [loading, setLoading] = useState(!initialRows || initialRows.length === 0);
 
   useEffect(() => {
-    fetch('/data/data.csv')
+    if (initialRows && initialRows.length >0){
+	const headersFromRows = Object.keys(initialRows[0]);
+	const headersTrimmed = headersFromRows.map((h) => h.trim());
+
+	setHeaders(headersTrimmed);
+	setData(initialRows);
+	if (onDataLoaded) onDataLoaded(initialRows);
+
+	const lowerHeaderMap = headersTrimmed.reduce((acc, h) => {
+	   acc[h.toLowerCase()] = h;
+	   return acc;
+	},{});
+	const actualFieldKey = lowerHeaderMap['field'];
+	setFieldKey(actualFieldKey);
+	if (actualFieldKey) {
+		const unique = initialRows
+		   .map((row) => row?.[actualFieldKey])
+		   .filter((f, i, arr) => f && arr.indexOf(f) === i);
+		setUniqueFields(unique);
+	}
+	setLoading(false);
+	return;
+
+    }
+
+
+    if (!csvUrl){
+	setLoading(false);
+	return;
+    }
+
+    setLoading(true);
+ 
+    fetch(csvUrl)
       .then((response) => {
         if (!response.ok) throw new Error('Network response was not ok');
         return response.text();
@@ -66,6 +100,7 @@ const DataTable = ({ onRowSelect, onSortChange, selectedRow }) => {
 
               setHeaders(headers);
               setData(normalizedData);
+              if (onDataLoaded) onDataLoaded(normalizedData);
 
               const lowerHeaderMap = headers.reduce((acc, h) => {
                 acc[h.toLowerCase()] = h;
@@ -81,13 +116,14 @@ const DataTable = ({ onRowSelect, onSortChange, selectedRow }) => {
                 setUniqueFields(unique);
               }
             }
+	      setLoading(false);
           },
         });
       })
       .catch((error) => {
         console.error('Failed to fetch CSV:', error);
       });
-  }, []);
+  }, [csvUrl, onDataLoaded, initialRows]);
 
   const filteredData = useMemo(() => {
     if (!selectedField || !fieldKey) return data;
@@ -124,7 +160,8 @@ const DataTable = ({ onRowSelect, onSortChange, selectedRow }) => {
     return <p className="mt-4 text-red-600">No results match your filter.</p>;
   }
 
-  if (!data.length) return <p className="mt-4">Loading data or no rows found.</p>;
+  if (loading) return <p className="mt-4">Loading data…</p>;
+  if (!data.length) return <p className="mt-4">No rows found.</p>;
 
   return (
     <div className="mt-6 overflow-auto" style={{
@@ -151,6 +188,25 @@ const DataTable = ({ onRowSelect, onSortChange, selectedRow }) => {
           ))}
         </select>
       </div>
+
+      {showFieldFilter && (
+        <div className="p-4 flex flex-wrap gap-2 items-center bg-[#F0F4FF] border-b border-[#1C39BB]">
+          <label htmlFor="field-select" className="mr-2 font-bold text-[#1C39BB]">
+            Filter by Field
+          </label>
+          <select
+            id="field-select"
+            value={selectedField}
+            onChange={(e) => setSelectedField(e.target.value)}
+            className="border border-[#1C39BB] rounded px-2 py-1 w-full sm:w-auto"
+          >
+            <option value="">-- All Fields --</option>
+            {uniqueFields.map((field, i) => (
+              <option key={i} value={field}>{field}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {/* Single horizontal scrollbar for both header + rows */}
       <div style={{ overflowX: 'auto', width: '100%' }}>
@@ -184,7 +240,6 @@ const DataTable = ({ onRowSelect, onSortChange, selectedRow }) => {
               </div>
             ))}
           </div>
-
           {/* Table Rows */}
           <List
             height={400}

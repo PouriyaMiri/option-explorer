@@ -1,9 +1,17 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-
-/** Lightweight star component */
+import { LATEST_LOG,LOG_FEEDBACK } from "../config/endpoints";
+import { getSessionId } from '../session';
+const sessionId = getSessionId();
 const StarRating = ({ value, onChange, label }) => (
-  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+  <div
+    style={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      flexWrap: 'wrap',
+    }}
+  >
     {label ? <span style={{ minWidth: 180 }}>{label}</span> : null}
     <div>
       {[1, 2, 3, 4, 5].map((star) => (
@@ -14,10 +22,9 @@ const StarRating = ({ value, onChange, label }) => (
             cursor: 'pointer',
             fontSize: '1.25rem',
             marginRight: '4px',
-            color: star <= value ? '#CC3333' : '#D1D5DB',
+            color: star <= value ? '#CC3333' : '#CBD5E1',
             userSelect: 'none',
           }}
-          aria-label={`${star} star${star > 1 ? 's' : ''}`}
         >
           {star <= value ? '★' : '☆'}
         </span>
@@ -42,42 +49,55 @@ const textareaStyle = {
   width: '100%',
   border: '1px solid #1C39BB',
   borderRadius: '8px',
-  padding: '10px',
+  padding: '0.5rem 0.75rem',
+  minHeight: '80px',
   resize: 'vertical',
-  color: '#1C39BB',
-  backgroundColor: 'white',
+  fontFamily: 'inherit',
+  fontSize: '0.95rem',
+  color: '#0f172a',
 };
 
-const radioWrap = { display: 'flex', gap: '1.5rem', marginTop: '0.25rem' };
+const radioWrap = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '1rem',
+  marginTop: '0.25rem',
+};
 
-const buttonStyle = (enabled) => ({
-  padding: '10px 20px',
+const buttonBase = {
   borderRadius: '8px',
-  fontSize: '16px',
-  cursor: enabled ? 'pointer' : 'not-allowed',
-  color: 'white',
-  backgroundColor: enabled ? '#1C39BB' : '#94A3B8',
+  padding: '0.6rem 1.4rem',
   border: 'none',
-});
+  fontSize: '1rem',
+  fontWeight: 600,
+  cursor: 'pointer',
+  transition: 'background-color 0.2s ease, transform 0.1s ease',
+};
 
 const ThanksPage = () => {
   const navigate = useNavigate();
 
+  // Q1/Q2 ratings
   const [difficulty, setDifficulty] = useState(0);
   const [satisfaction, setSatisfaction] = useState(0);
-  const [feedback, setFeedback] = useState('');
+
+  // Q3/Q4 – reason for sort order
   const [hasSortReason, setHasSortReason] = useState(null); // true | false | null
   const [sortReasonText, setSortReasonText] = useState('');
 
-  // we’ll display the sort order as [a, b, c]
+  // We display sort order as [a, b, c]
   const [sortColumns, setSortColumns] = useState(['-', '-', '-']);
 
-  // fetch the latest sort columns (array) from backend
+  // Open feedback text
+  const [feedback, setFeedback] = useState('');
+
+  const [saving, setSaving] = useState(false);
+
+  // Fetch latest sort columns (used on Page 1) from backend
   useEffect(() => {
-    fetch('http://194.249.2.210:3001/latest-log')
+    fetch(LATEST_LOG, { headers: { 'Content-Type': 'application/json', 'x-session-id': sessionId } })
       .then((res) => res.json())
       .then((arr) => {
-        // Ensure we always have exactly 3 display slots
         const safe = Array.isArray(arr) ? arr.slice(0, 3) : [];
         const padded = [safe[0] || '-', safe[1] || '-', safe[2] || '-'];
         setSortColumns(padded);
@@ -96,56 +116,95 @@ const ThanksPage = () => {
   };
 
   const handleSubmit = async () => {
+    if (!isFormValid()) return;
+    setSaving(true);
+
     const payload = {
+      page: 'thanks_page1',
       difficulty,
       satisfaction,
       feedback,
-      sortColumns: sortColumns.map((s) => (s ?? '-')),
+      sortColumns: sortColumns.map((s) => s ?? '-'),
       sortReasonGiven: hasSortReason,
       sortReasonText: hasSortReason ? sortReasonText : '',
     };
 
     try {
-      await fetch('http://194.249.2.210:3001/log-feedback', {
+      // This updates the same session file created by /log (Page 1)
+      await fetch(LOG_FEEDBACK, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        headers: { 'Content-Type': 'application/json', 'x-session-id': sessionId },
+        body: JSON.stringify({ sessionId, ...payload }),
       });
-      navigate('/final');
+
+      // After this questionnaire, send user to Page 2 (constraint-based system)
+      navigate('/page2');
     } catch {
       alert('Failed to submit feedback.');
+    } finally {
+      setSaving(false);
     }
   };
+
+  const nextEnabled = isFormValid() && !saving;
 
   return (
     <div style={{ padding: '24px', color: '#1C39BB' }}>
       <div style={box}>
-        <h1 style={{ fontSize: '1.5rem', fontWeight: 800, marginBottom: '1rem', textAlign: 'center' }}>
-          Thank you for your submission!
+        <h1
+          style={{
+            fontSize: '1.5rem',
+            fontWeight: 800,
+            marginBottom: '1rem',
+            textAlign: 'center',
+          }}
+        >
+          Thank you for your selection!
         </h1>
+
+        <p
+          style={{
+            fontSize: '0.95rem',
+            marginBottom: '1.5rem',
+            lineHeight: 1.6,
+          }}
+        >
+          You manually selected a model on the previous page. Before moving to
+          the next part of the study (using our system), please answer the
+          following questions about your experience.
+        </p>
 
         {/* Q1: Difficulty */}
         <div style={{ marginBottom: '1rem' }}>
-          <div style={labelStyle}>1. Please rate the difficulty of finding the optimal model:</div>
+          <div style={labelStyle}>
+            1. Please rate the difficulty of finding the optimal model:
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <StarRating value={difficulty} onChange={setDifficulty} />
-            <span style={{ fontSize: '0.85rem' }}>(1 = Very Easy, 5 = Very Difficult)</span>
+            <span style={{ fontSize: '0.85rem' }}>
+              (1 = Very easy, 5 = Very difficult)
+            </span>
           </div>
         </div>
 
-        {/* Q2: System satisfaction */}
-        <div style={{ marginBottom: '1rem' }}>
-          <div style={labelStyle}>2. How satisfied are you with the system?</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <StarRating value={satisfaction} onChange={setSatisfaction} />
-            <span style={{ fontSize: '0.85rem' }}>(1 = Very Dissatisfied, 5 = Very Satisfied)</span>
-          </div>
-        </div>
-
-        {/* Q3: Reason for selection order */}
+        {/* Q2: Satisfaction */}
         <div style={{ marginBottom: '1rem' }}>
           <div style={labelStyle}>
-            3. Is there any reason for your selection order [{sortColumns[0]}, {sortColumns[1]}, {sortColumns[2]}]?
+            2. How satisfied are you with the model you selected?
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <StarRating value={satisfaction} onChange={setSatisfaction} />
+            <span style={{ fontSize: '0.85rem' }}>
+              (1 = Not satisfied, 5 = Very satisfied)
+            </span>
+          </div>
+        </div>
+
+        {/* Q3: Sort order reason */}
+        <div style={{ marginBottom: '1rem' }}>
+          <div style={labelStyle}>
+            3. Is there any reason for your selection order [
+            {sortColumns[0]}, {sortColumns[1]}, {sortColumns[2]}]?
           </div>
           <div style={radioWrap}>
             <label>
@@ -172,41 +231,49 @@ const ThanksPage = () => {
         {/* Q4: Why (if Yes) */}
         {hasSortReason && (
           <div style={{ marginBottom: '1rem' }}>
-            <div style={labelStyle}>4. Why did you choose this column order?</div>
+            <div style={labelStyle}>
+              4. Why did you choose this column order?
+            </div>
             <textarea
+              style={textareaStyle}
               value={sortReasonText}
               onChange={(e) => setSortReasonText(e.target.value)}
-              rows={3}
-              placeholder="Explain your reasoning..."
-              style={textareaStyle}
+              placeholder="Please explain the reasoning behind your chosen sort order..."
             />
           </div>
         )}
 
-        {/* Q5: Satisfaction with the chosen model (free text) */}
-        <div style={{ marginBottom: '1rem' }}>
+        {/* Q5: Open feedback */}
+        <div style={{ marginBottom: '1.5rem' }}>
           <div style={labelStyle}>
-            5. How satisfied are you with the model you selected? (Please explain)
+            5. Add any comments about this first selection task - N/A if you don't have
+            any:
           </div>
           <textarea
+            style={textareaStyle}
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
-            rows={4}
-            placeholder="Write your explanation..."
-            style={textareaStyle}
+            placeholder="Your feedback..."
           />
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1.25rem' }}>
+        {/* Next button */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <button
+            type="button"
+            disabled={!nextEnabled}
             onClick={handleSubmit}
-            disabled={!isFormValid()}
-            style={buttonStyle(isFormValid())}
+            style={{
+              ...buttonBase,
+              backgroundColor: nextEnabled ? '#1C39BB' : '#94A3B8',
+              color: 'white',
+              cursor: nextEnabled ? 'pointer' : 'not-allowed',
+            }}
             onMouseOver={(e) => {
-              if (isFormValid()) e.currentTarget.style.backgroundColor = '#CC3333';
+              if (nextEnabled) e.currentTarget.style.backgroundColor = '#CC3333';
             }}
             onMouseOut={(e) => {
-              if (isFormValid()) e.currentTarget.style.backgroundColor = '#1C39BB';
+              if (nextEnabled) e.currentTarget.style.backgroundColor = '#1C39BB';
             }}
           >
             Next
